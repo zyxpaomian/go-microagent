@@ -16,3 +16,7 @@ func New(msg string) *AgentError {
 func StateError() *AgentError {
 	return New("[Agent状态异常] Agent处于一个不可操作的状态")
 }
+
+func FutureError() *AgentError {
+	return New("[Agent状态异常] Agent插件错误")
+}
