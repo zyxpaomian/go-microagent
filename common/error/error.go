@@ -1,6 +1,5 @@
 package error
 
-
 type AgentError struct {
 	msg string
 }

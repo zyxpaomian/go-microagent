@@ -4,14 +4,16 @@ import (
 	"context"
 	"microagent/common"
 	ae "microagent/common/error"
+	cfg "microagent/common/configparse"
 	log "microagent/common/formatlog"
-	"time"
-	"sync"
-	"net"
 	"microagent/msg"
-	//"fmt"
+	"net"
+	"sync"
+	"time"
+	"bytes"
+	"github.com/golang/protobuf/proto"
+	"fmt"
 )
-
 
 const (
 	Waiting = iota
@@ -24,20 +26,21 @@ type FutureErrors struct {
 }
 
 type InternalMsg struct {
-    Lock *sync.RWMutex
-    Msg   map[string]interface{}
+	Lock *sync.RWMutex
+	Msg  map[string]interface{}
 }
 
 // agent结构体，插件方式，每个future 作为一个interface进行实现，future和主agent通过chan event进行
 type Agent struct {
-	futures map[string]Future //支持的future map
-	cancel     context.CancelFunc // ctx cancel
-	ctx        context.Context // ctx
-	state      int // agent 状态字段
-	conn       net.Conn // agent的Conn
-	readBuf	   []byte // 读取的缓存
-	readMsgPayloadLth uint64 // 读取的当前消息的长度
-	readTotalBytesLth uint64 // 读取的总的消息长度
+	futures           map[string]Future  //支持的future map
+	cancel            context.CancelFunc // ctx cancel
+	ctx               context.Context    // ctx
+	state             int                // agent 状态字段
+	conn              net.Conn           // agent的Conn
+	sendLock		  *sync.Mutex		 // 发送锁
+	readBuf           []byte             // 读取的缓存
+	readMsgPayloadLth uint64             // 读取的当前消息的长度
+	readTotalBytesLth uint64             // 读取的总的消息长度
 }
 
 // future interface，每个future必须要实现内部的几个方法
@@ -49,12 +52,35 @@ type Future interface {
 }
 
 // Agent初始化
-func NewAgent(sizeEvtBuf int) *Agent {
+func NewAgent() *Agent {
+	log.Infoln("[Agent] 初始化Agent 对象....")
 	agt := Agent{
-		futures: 	map[string]Future{},
-		state:      Waiting,
+		futures: map[string]Future{},
+		state:   Waiting,
+		conn:	nil,
+		sendLock:	&sync.Mutex{},
+		readBuf:	[]byte{},
+		readMsgPayloadLth:	0,
+		readTotalBytesLth:	0,
 	}
 	return &agt
+}
+
+// Agent初始化
+func (agt *Agent) reset() {
+	log.Infoln("[Agent] 重置Agent 对象....")
+	// 关闭所有插件协程
+	//agt.cancel()
+	//agt.stopFutures()
+
+	// 重置Agent 对象
+	agt.futures = map[string]Future{}
+	agt.state = Waiting
+	agt.conn = nil
+	agt.sendLock = &sync.Mutex{}
+	agt.readBuf = []byte{}
+	agt.readMsgPayloadLth = 0
+	agt.readTotalBytesLth = 0
 }
 
 // 注册future
@@ -66,30 +92,57 @@ func (agt *Agent) RegisterFuture(name string, fucture Future) error {
 	return fucture.Init()
 }
 
-// 启动agent, 同时启动
+// 真正启动Agent，启动失败则重启Agent
+func (agt *Agent) Run() {
+	var err error
+	for {
+		log.Infoln("[Agent] 准备启动Agent....")
+		if err = agt.Start(); err != nil {
+			log.Infoln("[Agent] 启动Agent失败，等待10S 后进行重新启动")
+			time.Sleep(time.Duration(10) * time.Second)
+			agt.reset()
+			continue
+		} else {
+			select {}
+		}
+	}
+}
+
+// 启动agent, 同时启动所有插件
 func (agt *Agent) Start() error {
 	if agt.state != Waiting {
 		return ae.StateError()
 	}
 	agt.state = Running
+
+	// 启动tcp 服务，和server 端的主要通信方式
+	serviceAddr := cfg.GlobalConf.GetStr("common", "svraddr")
+	conn, err := net.Dial("tcp", serviceAddr)
+	if err != nil {
+		log.Errorf("[Agent]无法连接到服务器 %s，报错信息 %s", serviceAddr, err.Error())
+		return ae.New("[Agent状态异常] 连接Agent到服务端异常")
+	}
+	defer conn.Close()
+	agt.conn = conn
+
+	// 启动各个插件
 	agt.ctx, agt.cancel = context.WithCancel(context.Background())
-	
+
 	return agt.startFutures()
 }
 
 // 新建一个协程，用于处理其他协程发来的消息
-func (agt *Agent) FutureProcessGroutine(agtCtx context.Context,  chMsg chan *InternalMsg) {
+func (agt *Agent) FutureMsgProcessGroutine(agtCtx context.Context, chMsg chan *InternalMsg) {
 	for {
-
 		select {
-		case fuMsg := <- chMsg:
+		case fuMsg := <-chMsg:
 			switch fuMsg.Msg["futname"] {
 			case "Heartbeat":
 				log.Infoln(*fuMsg)
 			case "Collect":
 				log.Infoln(*fuMsg)
 			default:
-				log.Errorln("[Agent]不存在的插件名, 请检查消息")
+				log.Errorln("[Agent]不存在的插件名, 请检查内部消息")
 			}
 		case <-agtCtx.Done():
 			return
@@ -99,16 +152,33 @@ func (agt *Agent) FutureProcessGroutine(agtCtx context.Context,  chMsg chan *Int
 
 // 启动Futures
 func (agt *Agent) startFutures() error {
+	var err error
+	var errs FutureErrors
+	var errInfo string
 	var msgChan = make(chan *InternalMsg, 20)
-	// 启动个gorountine 读取内部插件的消息
-	go agt.FutureProcessGroutine(agt.ctx, msgChan)
-	
-	for name, future := range agt.futures {
-		log.Infof("[Agent] future: %s 准备启动....", name)
-		go future.Start(agt.ctx, msgChan)
-	}
 
-	return nil
+	// 启动个gorountine 读取内部插件的消息
+	go agt.FutureMsgProcessGroutine(agt.ctx, msgChan)
+
+	for name, future := range agt.futures {
+		go func(name string, future Future, ctx context.Context, chMsg chan *InternalMsg) {
+			log.Infof("[Agent] future: %s 准备启动....", name)
+			if err = future.Start(agt.ctx, msgChan); err != nil {
+				errs.ErrorSlice = append(errs.ErrorSlice, ae.New(name+":"+ err.Error()))
+			}
+		}(name, future, agt.ctx, msgChan)
+		//go future.Start(agt.ctx, msgChan)
+	}
+	if len(errs.ErrorSlice) == 0 {
+		return nil
+	} else {
+		for _, er := range(errs.ErrorSlice) {
+			erInfo := fmt.Sprintf("[Agent] 插件启动错误, %v,", er.Error())
+			errInfo = errInfo + erInfo
+		}
+		agt.Stop()
+		return ae.New(errInfo)
+	}
 }
 
 // 关闭agent
@@ -125,17 +195,21 @@ func (agt *Agent) Stop() error {
 func (agt *Agent) stopFutures() error {
 	var err error
 	var errs FutureErrors
+	var errInfo string
 	for name, future := range agt.futures {
 		if err = future.Stop(); err != nil {
-			errs.ErrorSlice = append(errs.ErrorSlice,
-				ae.New(name+":"+err.Error()))
+			errs.ErrorSlice = append(errs.ErrorSlice, ae.New(name+":"+ err.Error()))
 		}
 	}
 	if len(errs.ErrorSlice) == 0 {
 		return nil
+	} else {
+		for _, er := range(errs.ErrorSlice) {
+			erInfo := fmt.Sprintf("[Agent] 插件关闭错误, %v,", er.Error())
+			errInfo = errInfo + erInfo
+		}
+		return ae.New(errInfo)
 	}
-
-	return ae.FutureError()
 }
 
 // 销毁agent
@@ -150,23 +224,61 @@ func (agt *Agent) Destory() error {
 func (agt *Agent) destoryFutures() error {
 	var err error
 	var errs FutureErrors
+	var errInfo string
 	for name, future := range agt.futures {
 		if err = future.Destory(); err != nil {
-			errs.ErrorSlice = append(errs.ErrorSlice,
-				ae.New(name+":"+err.Error()))
+			errs.ErrorSlice = append(errs.ErrorSlice, ae.New(name+":"+err.Error()))
 		}
 	}
 	if len(errs.ErrorSlice) == 0 {
 		return nil
+	} else {
+		for _, er := range(errs.ErrorSlice) {
+			erInfo := fmt.Sprintf("[Agent] 插件销毁错误, %v,", er.Error())
+			errInfo = errInfo + erInfo
+		}
+		return ae.New(errInfo)
 	}
-	return ae.FutureError()
 }
 
+// 发送消息
+func (agt *Agent) sendMsg(msg *msg.Msg) {
+	// 生成MSG
+	protobufMsg := []byte{}
+	var err error
+	if msg.Msg != nil {
+		protobufMsg, err = proto.Marshal(msg.Msg)
+		if err != nil {
+			log.Errorf("protobuf消息生成失败: %s", err.Error())
+			return
+		}
+	}
+	// 计算长度等信息
+	msgSize := len(protobufMsg)
+	msgType := msg.Type
 
+	// 生成结果报文
+	packetBuf := &bytes.Buffer{}
+	lengthBytes := common.GenLengthFromInt(msgSize)
+	packetBuf.Write(lengthBytes[:])
+	typeBytes := common.GenTypeFromInt(int(msgType))
+	packetBuf.Write(typeBytes[:])
+	packetBuf.Write(protobufMsg)
+	packet := packetBuf.Bytes()
 
+	log.Debugf("发送报文，报文长度 %d，类型 %d，消息体长度 %d", msgSize+12, msgType, msgSize)
+	log.Debugf("报文内容: %v", packet)
 
-
-
+	agt.sendLock.Lock()
+	// 设置写入超时
+	agt.conn.SetWriteDeadline(time.Now().Add(time.Duration(cfg.GlobalConf.GetInt("common", "sendwrtimeout")) * time.Second))
+	_, err = agt.conn.Write(packet)
+	if err != nil {
+		log.Errorf("sendMsg失败: %s", err.Error())
+		agt.Stop()
+	}
+	agt.sendLock.Unlock()
+}
 
 // 处理消息的方法
 func (agt *Agent) getMsg() (*msg.Msg, error) {

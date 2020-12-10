@@ -3,18 +3,17 @@ package collect
 import (
 	"context"
 	ae "microagent/common/error"
-	"microagent/core"
-	"time"
 	log "microagent/common/formatlog"
+	"microagent/core"
 	"sync"
+	"time"
 )
 
 type Collector struct {
-	agtCtx      context.Context
-	stopChan    chan struct{}
-	name        string
-	colEvent	*ColItem
-
+	agtCtx   context.Context
+	stopChan chan struct{}
+	name     string
+	colEvent *ColItem
 }
 
 func NewCollector(name string) *Collector {
@@ -30,13 +29,12 @@ func (c *Collector) Init() error {
 	return nil
 }
 
-
 func (c *Collector) Start(agtCtx context.Context, chMsg chan *core.InternalMsg) error {
 	log.Infoln("[Collect]启动Colletcor的goroutine....", c.name)
 	internalMsg := &core.InternalMsg{
-        Lock: new(sync.RWMutex),
-        Msg:   make(map[string]interface{}),
-    }		
+		Lock: new(sync.RWMutex),
+		Msg:  make(map[string]interface{}),
+	}
 	for {
 		c.colEvent.CollectRun()
 		//fmt.Println(c.content)
