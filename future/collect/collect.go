@@ -13,7 +13,7 @@ var Col *ColItem
 type ColItem struct {
 	Uptime   string
 	CpuArch  string
-	CpuNum   int
+	CpuNum   int32
 	MemTotal string
 	ColTime  string
 }
@@ -68,7 +68,7 @@ func (co *ColItem) GetCpuArch() {
 
 // cpu数量
 func (co *ColItem) GetCpuNum() {
-	co.CpuNum = runtime.NumCPU()
+	co.CpuNum = int32(runtime.NumCPU())
 }
 
 // 内存总量

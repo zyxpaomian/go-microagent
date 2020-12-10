@@ -1,18 +1,18 @@
 package core
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"github.com/golang/protobuf/proto"
 	"microagent/common"
-	ae "microagent/common/error"
 	cfg "microagent/common/configparse"
+	ae "microagent/common/error"
 	log "microagent/common/formatlog"
 	"microagent/msg"
 	"net"
 	"sync"
 	"time"
-	"bytes"
-	"github.com/golang/protobuf/proto"
-	"fmt"
 )
 
 const (
@@ -37,7 +37,7 @@ type Agent struct {
 	ctx               context.Context    // ctx
 	state             int                // agent 状态字段
 	conn              net.Conn           // agent的Conn
-	sendLock		  *sync.Mutex		 // 发送锁
+	sendLock          *sync.Mutex        // 发送锁
 	readBuf           []byte             // 读取的缓存
 	readMsgPayloadLth uint64             // 读取的当前消息的长度
 	readTotalBytesLth uint64             // 读取的总的消息长度
@@ -55,13 +55,13 @@ type Future interface {
 func NewAgent() *Agent {
 	log.Infoln("[Agent] 初始化Agent 对象....")
 	agt := Agent{
-		futures: map[string]Future{},
-		state:   Waiting,
-		conn:	nil,
-		sendLock:	&sync.Mutex{},
-		readBuf:	[]byte{},
-		readMsgPayloadLth:	0,
-		readTotalBytesLth:	0,
+		futures:           map[string]Future{},
+		state:             Waiting,
+		conn:              nil,
+		sendLock:          &sync.Mutex{},
+		readBuf:           []byte{},
+		readMsgPayloadLth: 0,
+		readTotalBytesLth: 0,
 	}
 	return &agt
 }
@@ -69,10 +69,6 @@ func NewAgent() *Agent {
 // Agent初始化
 func (agt *Agent) reset() {
 	log.Infoln("[Agent] 重置Agent 对象....")
-	// 关闭所有插件协程
-	//agt.cancel()
-	//agt.stopFutures()
-
 	// 重置Agent 对象
 	agt.futures = map[string]Future{}
 	agt.state = Waiting
@@ -94,24 +90,20 @@ func (agt *Agent) RegisterFuture(name string, fucture Future) error {
 
 // 真正启动Agent，启动失败则重启Agent
 func (agt *Agent) Run() {
-	var err error
 	for {
 		log.Infoln("[Agent] 准备启动Agent....")
-		if err = agt.Start(); err != nil {
-			log.Infoln("[Agent] 启动Agent失败，等待10S 后进行重新启动")
-			time.Sleep(time.Duration(10) * time.Second)
-			agt.reset()
-			continue
-		} else {
-			select {}
-		}
+		agt.Start()
+		log.Errorln("[Agent] 启动Agent失败，等待10S 后进行重新启动")
+		agt.Stop()
+		agt.reset()
+		time.Sleep(time.Duration(10) * time.Second)
 	}
 }
 
 // 启动agent, 同时启动所有插件
-func (agt *Agent) Start() error {
+func (agt *Agent) Start() {
 	if agt.state != Waiting {
-		return ae.StateError()
+		return
 	}
 	agt.state = Running
 
@@ -120,7 +112,7 @@ func (agt *Agent) Start() error {
 	conn, err := net.Dial("tcp", serviceAddr)
 	if err != nil {
 		log.Errorf("[Agent]无法连接到服务器 %s，报错信息 %s", serviceAddr, err.Error())
-		return ae.New("[Agent状态异常] 连接Agent到服务端异常")
+		return
 	}
 	defer conn.Close()
 	agt.conn = conn
@@ -128,19 +120,48 @@ func (agt *Agent) Start() error {
 	// 启动各个插件
 	agt.ctx, agt.cancel = context.WithCancel(context.Background())
 
-	return agt.startFutures()
+	if err = agt.startFutures(); err != nil {
+		return
+	}
+
+	var wg sync.WaitGroup
+
+	// 用于监听服务端发来的消息
+	wg.Add(1)
+	go agt.listen(&wg)
+
+	// 用于发送心跳包, 核心功能，不做插件处理
+	wg.Add(1)
+	go agt.heartbeat(&wg)
+
+	// 等待线程运行结束
+	wg.Wait()
 }
 
 // 新建一个协程，用于处理其他协程发来的消息
-func (agt *Agent) FutureMsgProcessGroutine(agtCtx context.Context, chMsg chan *InternalMsg) {
+func (agt *Agent) fuMsgHandle(agtCtx context.Context, chMsg chan *InternalMsg) {
 	for {
+		if agt.state == Erroring {
+			log.Errorln("[Agent] Agent状态错误，跳出循环，等待Agent 自动重置")
+			break
+		}
 		select {
 		case fuMsg := <-chMsg:
 			switch fuMsg.Msg["futname"] {
-			case "Heartbeat":
-				log.Infoln(*fuMsg)
 			case "Collect":
-				log.Infoln(*fuMsg)
+				// 生成心跳包
+				collectMsg := &msg.Msg{
+					Type: msg.CLIENT_MSG_COLLECT,
+					Msg: &msg.Collect{
+						Uptime:   fuMsg.Msg["uptime"].(string),
+						Cpuarch:  fuMsg.Msg["cpuarch"].(string),
+						Cpunum:   fuMsg.Msg["cpunum"].(int32),
+						Memtotal: fuMsg.Msg["memtotal"].(string),
+						ColTime:  fuMsg.Msg["coltime"].(string),
+					},
+				}
+				// 发送收集项报文
+				agt.sendMsg(collectMsg)
 			default:
 				log.Errorln("[Agent]不存在的插件名, 请检查内部消息")
 			}
@@ -158,22 +179,21 @@ func (agt *Agent) startFutures() error {
 	var msgChan = make(chan *InternalMsg, 20)
 
 	// 启动个gorountine 读取内部插件的消息
-	go agt.FutureMsgProcessGroutine(agt.ctx, msgChan)
+	go agt.fuMsgHandle(agt.ctx, msgChan)
 
 	for name, future := range agt.futures {
 		// 顺序启动go routine， 确保每个插件第一次都能正确执行
 		go func(name string, future Future, ctx context.Context, chMsg chan *InternalMsg) {
 			log.Infof("[Agent] future: %s 准备启动....", name)
 			if err = future.Start(agt.ctx, msgChan); err != nil {
-				errs.ErrorSlice = append(errs.ErrorSlice, ae.New(name+":"+ err.Error()))
+				errs.ErrorSlice = append(errs.ErrorSlice, ae.New(name+":"+err.Error()))
 			}
 		}(name, future, agt.ctx, msgChan)
-		//go future.Start(agt.ctx, msgChan)
 	}
 	if len(errs.ErrorSlice) == 0 {
 		return nil
 	} else {
-		for _, er := range(errs.ErrorSlice) {
+		for _, er := range errs.ErrorSlice {
 			erInfo := fmt.Sprintf("[Agent] 插件启动错误, %v,", er.Error())
 			errInfo = errInfo + erInfo
 		}
@@ -199,13 +219,13 @@ func (agt *Agent) stopFutures() error {
 	var errInfo string
 	for name, future := range agt.futures {
 		if err = future.Stop(); err != nil {
-			errs.ErrorSlice = append(errs.ErrorSlice, ae.New(name+":"+ err.Error()))
+			errs.ErrorSlice = append(errs.ErrorSlice, ae.New(name+":"+err.Error()))
 		}
 	}
 	if len(errs.ErrorSlice) == 0 {
 		return nil
 	} else {
-		for _, er := range(errs.ErrorSlice) {
+		for _, er := range errs.ErrorSlice {
 			erInfo := fmt.Sprintf("[Agent] 插件关闭错误, %v,", er.Error())
 			errInfo = errInfo + erInfo
 		}
@@ -234,11 +254,73 @@ func (agt *Agent) destoryFutures() error {
 	if len(errs.ErrorSlice) == 0 {
 		return nil
 	} else {
-		for _, er := range(errs.ErrorSlice) {
+		for _, er := range errs.ErrorSlice {
 			erInfo := fmt.Sprintf("[Agent] 插件销毁错误, %v,", er.Error())
 			errInfo = errInfo + erInfo
 		}
 		return ae.New(errInfo)
+	}
+}
+
+// 心跳服务，基础功能，不当作插件添加
+func (agt *Agent) heartbeat(wg *sync.WaitGroup) {
+	log.Infoln("[Agent] 开启心跳包发送线程....")
+	for {
+		if agt.state == Erroring {
+			log.Errorln("[Agent] Agent状态错误，跳出循环，等待Agent 自动重置")
+			break
+		}
+
+		// 生成心跳包
+		heartbeatMsg := &msg.Msg{
+			Type: msg.CLIENT_MSG_HEARTBEAT,
+			Msg: &msg.Heartbeat{
+				Status:        "GOOD",
+				HeartbeatTime: time.Now().Format("2006-01-02 15:04:05"),
+			},
+		}
+		// 发送心跳包
+		agt.sendMsg(heartbeatMsg)
+
+		// sleep 10秒
+		time.Sleep(time.Duration(10) * time.Second)
+	}
+	wg.Done()
+}
+
+func (agt *Agent) handleHeartbeatMsg(serverMsg *msg.Msg) {
+	log.Infoln("[Agent] 收到了服务端发送来的Heartbeat 应答包")
+}
+
+/* 和server 端通信主要使用的方法 */
+// 监听tcp 长链接
+func (agt *Agent) listen(wg *sync.WaitGroup) {
+	log.Infoln("[Agent] 开启TCP监听线程....")
+	for {
+		if agt.state == Erroring {
+			log.Errorln("[Agent] Agent状态错误，跳出循环，等待Agent 自动重置")
+			break
+		}
+		msg, err := agt.getMsg()
+		if err != nil {
+			log.Errorf("[Agent]从服务端读取消息失败，结束与该服务器的连接，报错内容: %s", err.Error())
+			break
+		}
+		// 处理消息
+		agt.handleMsg(msg)
+
+	}
+	wg.Done()
+}
+
+// 处理TCP 收到的消息
+func (agt *Agent) handleMsg(serverMsg *msg.Msg) {
+	log.Infof("[Agent] 收到了服务器端的消息请求，请求类型: %d", serverMsg.Type)
+	switch serverMsg.Type {
+	case msg.CLIENT_MSG_HEARTBEAT:
+		agt.handleHeartbeatMsg(serverMsg)
+	default:
+		log.Errorf("[Agent] 未知的消息类型 %d", serverMsg.Type)
 	}
 }
 
@@ -251,6 +333,8 @@ func (agt *Agent) sendMsg(msg *msg.Msg) {
 		protobufMsg, err = proto.Marshal(msg.Msg)
 		if err != nil {
 			log.Errorf("protobuf消息生成失败: %s", err.Error())
+			// Agent 错误，等待重载
+			agt.state = Erroring
 			return
 		}
 	}
@@ -276,7 +360,8 @@ func (agt *Agent) sendMsg(msg *msg.Msg) {
 	_, err = agt.conn.Write(packet)
 	if err != nil {
 		log.Errorf("sendMsg失败: %s", err.Error())
-		agt.Stop()
+		// Agent 错误，等待重载
+		agt.state = Erroring
 	}
 	agt.sendLock.Unlock()
 }

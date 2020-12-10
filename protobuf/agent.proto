@@ -1,0 +1,17 @@
+syntax = "proto3";
+package msg;
+
+// 心跳报文
+message Heartbeat {
+    string status = 1;
+    string heartbeatTime = 2;
+}
+
+// 主机收集报文
+message Collect {
+    string uptime = 1;
+    string cpuarch = 2;
+    int32 cpunum = 3;
+    string memtotal = 4;
+    string ColTime = 5;
+}
