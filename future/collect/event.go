@@ -43,7 +43,7 @@ func (c *Collector) Start(agtCtx context.Context, chMsg chan *core.InternalMsg) 
 			c.stopChan <- struct{}{}
 			break
 		default:
-			time.Sleep(time.Millisecond * 1000)
+			time.Sleep(time.Millisecond * 10000)
 			// 并发安全，加个锁
 			internalMsg.Lock.Lock()
 			internalMsg.Msg["futname"] = "Collect"
@@ -57,6 +57,7 @@ func (c *Collector) Start(agtCtx context.Context, chMsg chan *core.InternalMsg) 
 			chMsg <- internalMsg
 		}
 	}
+	return ae.New("[Collect] Collect 启动失败")
 }
 
 func (c *Collector) Stop() error {

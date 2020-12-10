@@ -161,6 +161,7 @@ func (agt *Agent) startFutures() error {
 	go agt.FutureMsgProcessGroutine(agt.ctx, msgChan)
 
 	for name, future := range agt.futures {
+		// 顺序启动go routine， 确保每个插件第一次都能正确执行
 		go func(name string, future Future, ctx context.Context, chMsg chan *InternalMsg) {
 			log.Infof("[Agent] future: %s 准备启动....", name)
 			if err = future.Start(agt.ctx, msgChan); err != nil {

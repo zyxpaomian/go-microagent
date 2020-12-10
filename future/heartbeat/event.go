@@ -40,6 +40,7 @@ func (h *Heartbeat) Start(agtCtx context.Context, chMsg chan *core.InternalMsg) 
 			break
 		default:
 			time.Sleep(time.Millisecond * 2000)
+			time.Sleep(time.Duration(10) * time.Second)
 
 			// 并发安全，加个锁
 			internalMsg.Lock.Lock()
@@ -51,6 +52,7 @@ func (h *Heartbeat) Start(agtCtx context.Context, chMsg chan *core.InternalMsg) 
 			chMsg <- internalMsg
 		}
 	}
+	return ae.New("[Heartbeat] HeartBeat 启动失败")
 }
 
 func (h *Heartbeat) Stop() error {
