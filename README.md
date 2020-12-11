@@ -5,7 +5,7 @@ ___
  
 ### 代码架构
  
- ![pic](https://github.com/zyxpaomian/mypic/blob/main/agent.jpg?raw=true)
+ ![pic](https://github.com/zyxpaomian/mypic/blob/main/agent.jpg)
  
 ### msg消息体生成
 > 消息体使用protobuf 封装, 原文件在protobuf下，msg需要手动生成
