@@ -24,13 +24,13 @@ func NewCollector(name string) *Collector {
 }
 
 func (c *Collector) Init() error {
-	log.Infoln("[Collect]初始化Colletcor的goroutine....", c.name)
+	log.Infoln("[Collect] 初始化Colletcor的goroutine....", c.name)
 	c.colEvent = NewCol()
 	return nil
 }
 
 func (c *Collector) Start(agtCtx context.Context, chMsg chan *core.InternalMsg) error {
-	log.Infoln("[Collect]启动Colletcor的goroutine....", c.name)
+	log.Infoln("[Collect] 启动Colletcor的goroutine....", c.name)
 	internalMsg := &core.InternalMsg{
 		Lock: new(sync.RWMutex),
 		Msg:  make(map[string]interface{}),
@@ -61,7 +61,7 @@ func (c *Collector) Start(agtCtx context.Context, chMsg chan *core.InternalMsg) 
 }
 
 func (c *Collector) Stop() error {
-	log.Infoln("[Collect]关闭Colletcor的goroutine....", c.name)
+	log.Infoln("[Collect] 关闭Colletcor的goroutine....", c.name)
 	select {
 	case <-c.stopChan:
 		return nil
@@ -71,6 +71,6 @@ func (c *Collector) Stop() error {
 }
 
 func (c *Collector) Destory() error {
-	log.Infoln("[Collect]销毁Colletcor的goroutine....", c.name)
+	log.Infoln("[Collect] 销毁Colletcor的goroutine....", c.name)
 	return nil
 }

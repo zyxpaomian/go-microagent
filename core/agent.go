@@ -69,14 +69,15 @@ func NewAgent() *Agent {
 // Agent初始化
 func (agt *Agent) reset() {
 	log.Infoln("[Agent] 重置Agent 对象....")
-	// 重置Agent 对象
-	agt.futures = map[string]Future{}
+	// 重置Agent 对象， future 不要重置，避免还要再次注册
 	agt.state = Waiting
 	agt.conn = nil
 	agt.sendLock = &sync.Mutex{}
 	agt.readBuf = []byte{}
 	agt.readMsgPayloadLth = 0
 	agt.readTotalBytesLth = 0
+
+
 }
 
 // 注册future
@@ -166,7 +167,7 @@ func (agt *Agent) fuMsgHandle(agtCtx context.Context, chMsg chan *InternalMsg) {
 				log.Errorln("[Agent]不存在的插件名, 请检查内部消息")
 			}
 		case <-agtCtx.Done():
-			return
+			break
 		}
 	}
 }
@@ -317,7 +318,7 @@ func (agt *Agent) listen(wg *sync.WaitGroup) {
 func (agt *Agent) handleMsg(serverMsg *msg.Msg) {
 	log.Infof("[Agent] 收到了服务器端的消息请求，请求类型: %d", serverMsg.Type)
 	switch serverMsg.Type {
-	case msg.CLIENT_MSG_HEARTBEAT:
+	case msg.SERVER_MSG_HEARTBEAT_RESPONSE:
 		agt.handleHeartbeatMsg(serverMsg)
 	default:
 		log.Errorf("[Agent] 未知的消息类型 %d", serverMsg.Type)
@@ -332,7 +333,7 @@ func (agt *Agent) sendMsg(msg *msg.Msg) {
 	if msg.Msg != nil {
 		protobufMsg, err = proto.Marshal(msg.Msg)
 		if err != nil {
-			log.Errorf("protobuf消息生成失败: %s", err.Error())
+			log.Errorf("[Agent] protobuf消息生成失败: %s", err.Error())
 			// Agent 错误，等待重载
 			agt.state = Erroring
 			return
@@ -351,15 +352,15 @@ func (agt *Agent) sendMsg(msg *msg.Msg) {
 	packetBuf.Write(protobufMsg)
 	packet := packetBuf.Bytes()
 
-	log.Debugf("发送报文，报文长度 %d，类型 %d，消息体长度 %d", msgSize+12, msgType, msgSize)
-	log.Debugf("报文内容: %v", packet)
+	log.Debugf("[Agent] 发送报文，报文长度 %d，类型 %d，消息体长度 %d", msgSize+12, msgType, msgSize)
+	log.Debugf("[Agent] 报文内容: %v", packet)
 
 	agt.sendLock.Lock()
 	// 设置写入超时
 	agt.conn.SetWriteDeadline(time.Now().Add(time.Duration(cfg.GlobalConf.GetInt("common", "sendwrtimeout")) * time.Second))
 	_, err = agt.conn.Write(packet)
 	if err != nil {
-		log.Errorf("sendMsg失败: %s", err.Error())
+		log.Errorf("[Agent] sendMsg失败: %s", err.Error())
 		// Agent 错误，等待重载
 		agt.state = Erroring
 	}
@@ -382,47 +383,47 @@ func (agt *Agent) getMsg() (*msg.Msg, error) {
 		}
 
 		// 设置读的超时时间
-		agt.conn.SetReadDeadline(time.Now().Add(time.Duration(5) * time.Second))
+		agt.conn.SetReadDeadline(time.Now().Add(time.Duration(20) * time.Second))
 
 		if len(agt.readBuf) < 8 {
 			// 长度信息还没有读取到
-			log.Debugln("准备读取报文，当前报文长度小于8")
-			readBuf := make([]byte, 256)
+			log.Debugln("[Agent] 准备读取报文，当前报文长度小于8")
+			readBuf := make([]byte, 512)
 			n, err := agt.conn.Read(readBuf)
-			log.Debugln("取到报文")
+			log.Debugln("[Agent] 取到报文")
 			if err != nil {
-				log.Errorf("读取数据时报错，报错内容: %s", err.Error())
+				log.Errorf("[Agent] 读取数据时报错，报错内容: %s", err.Error())
 				return nil, err
 			}
 			agt.conn.SetReadDeadline(time.Time{})
-			log.Debugf("此次读取到了 %d 字节的数据", n)
-			log.Debugf("读取到 报文，内容: %v", readBuf[:n])
+			log.Debugf("[Agent] 此次读取到了 %d 字节的数据", n)
+			log.Debugf("[Agent] 读取到 报文，内容: %v", readBuf[:n])
 			agt.readBuf = append(agt.readBuf, readBuf[:n]...)
 
 			// 判断长度，如果达到8了则生成payload长度
 			if len(agt.readBuf) >= 8 {
 				agt.readMsgPayloadLth = common.GenIntFromLength(agt.readBuf[0:8])
-				log.Debugf("读取到足够长度的报文，解析得到的报文长度为 %d", agt.readMsgPayloadLth)
+				log.Debugf("[Agent] 读取到足够长度的报文，解析得到的报文长度为 %d", agt.readMsgPayloadLth)
 			}
 		} else if agt.readMsgPayloadLth+12 > uint64(len(agt.readBuf)) {
-			log.Debugln("报文长度信息已经都读取完成，但是整个报文还没有全部传输")
+			log.Debugln("[Agent] 报文长度信息已经都读取完成，但是整个报文还没有全部传输")
 			// 长度信息读取到了，但是payload没有读取完成
 			readBuf := make([]byte, 256)
 			n, err := agt.conn.Read(readBuf)
 			if err != nil {
-				log.Errorf("读取数据时报错，报错内容: %s", err.Error())
+				log.Errorf("[Agent] 读取数据时报错，报错内容: %s", err.Error())
 				return nil, err
 			}
 			agt.conn.SetReadDeadline(time.Time{})
-			log.Debugln("此次读取到了 %d 字节的数据", n)
+			log.Debugln("[Agent] 此次读取到了 %d 字节的数据", n)
 			agt.readBuf = append(agt.readBuf, readBuf[:n]...)
 		} else {
-			log.Debugln("报文已经都读取完成")
+			log.Debugln("[Agent] 报文已经都读取完成")
 			agt.conn.SetReadDeadline(time.Time{})
 			// 整个消息都读取到了，此时agt.readBuf中可能包含一个或一个以上的消息内容
 			msgLength := 12 + agt.readMsgPayloadLth
 			msgTypeBytes := agt.readBuf[8:12]
-			log.Debugf("报文总长度 %d, 消息类型 %d, 消息体长度 %d", msgLength, common.GenIntFromType(msgTypeBytes), agt.readMsgPayloadLth)
+			log.Debugf("[Agent] 报文总长度 %d, 消息类型 %d, 消息体长度 %d", msgLength, common.GenIntFromType(msgTypeBytes), agt.readMsgPayloadLth)
 
 			if agt.readMsgPayloadLth == 0 {
 				// 不存在消息体
@@ -441,7 +442,7 @@ func (agt *Agent) getMsg() (*msg.Msg, error) {
 				agt.readMsgPayloadLth = 0
 				if len(agt.readBuf) >= 8 {
 					agt.readMsgPayloadLth = common.GenIntFromLength(agt.readBuf[0:8])
-					log.Debugf("读取到足够长度的报文，解析得到的报文长度为 %d, 报文长度元数据: %v,buf内容: %v", agt.readMsgPayloadLth, agt.readBuf[0:8], agt.readBuf)
+					log.Debugf("[Agent] 读取到足够长度的报文，解析得到的报文长度为 %d, 报文长度元数据: %v,buf内容: %v", agt.readMsgPayloadLth, agt.readBuf[0:8], agt.readBuf)
 				}
 				return msg, nil
 			} else {
@@ -458,7 +459,7 @@ func (agt *Agent) getMsg() (*msg.Msg, error) {
 				agt.readMsgPayloadLth = 0
 				if len(agt.readBuf) >= 8 {
 					agt.readMsgPayloadLth = common.GenIntFromLength(agt.readBuf[0:8])
-					log.Debugf("读取到足够长度的报文，解析得到的报文长度为 %d, 报文长度元数据: %v,buf内容: %v", agt.readMsgPayloadLth, agt.readBuf[0:8], agt.readBuf)
+					log.Debugf("[Agent] 读取到足够长度的报文，解析得到的报文长度为 %d, 报文长度元数据: %v,buf内容: %v", agt.readMsgPayloadLth, agt.readBuf[0:8], agt.readBuf)
 				}
 
 				return msg, nil
