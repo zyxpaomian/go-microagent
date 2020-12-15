@@ -18,7 +18,10 @@ func main() {
 	// 初始化配置 && 日志
 	cfg.GlobalConf.CfgInit("./conf/microagent.ini")
 	logname := cfg.GlobalConf.GetStr("common", "logname")
-	log.InitLog(logname, "INFO")
+    loglevel := cfg.GlobalConf.GetStr("common", "loglevel")
+	log.InitLog(logname, loglevel)	
+
+
 
 	// 初始化Agent
 	agt := core.NewAgent()
@@ -31,5 +34,6 @@ func main() {
 
 	// 启动Agent
 	go agt.Run()
+
 	select {}
 }

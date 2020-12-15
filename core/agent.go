@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/golang/protobuf/proto"
 	"microagent/common"
+	"microagent/controller"
 	cfg "microagent/common/configparse"
 	ae "microagent/common/error"
 	log "microagent/common/formatlog"
@@ -108,11 +109,17 @@ func (agt *Agent) Start() {
 	}
 	agt.state = Running
 
-	// 启动tcp 服务，和server 端的主要通信方式
-	serviceAddr := cfg.GlobalConf.GetStr("common", "svraddr")
-	conn, err := net.Dial("tcp", serviceAddr)
+	svrAddr, err := controller.Commctrl.ElectServer()
 	if err != nil {
-		log.Errorf("[Agent]无法连接到服务器 %s，报错信息 %s", serviceAddr, err.Error())
+		log.Errorf("[Agent] 获取Agent链接信息失败, 请检查配置, 错误信息: %s", err.Error())
+		return
+	}
+
+	// 启动tcp 服务，和server 端的主要通信方式
+	// serviceAddr := cfg.GlobalConf.GetStr("common", "svraddr")
+	conn, err := net.Dial("tcp", svrAddr)
+	if err != nil {
+		log.Errorf("[Agent] 无法连接到服务器 %s，报错信息 %s", svrAddr, err.Error())
 		return
 	}
 	defer conn.Close()
