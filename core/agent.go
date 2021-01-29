@@ -14,6 +14,8 @@ import (
 	"net"
 	"sync"
 	"time"
+	//"syscall"
+	"os"
 )
 
 const (
@@ -109,6 +111,8 @@ func (agt *Agent) Start() {
 	}
 	agt.state = Running
 
+	agt.ctx, agt.cancel = context.WithCancel(context.Background())
+
 	svrAddr, err := controller.Commctrl.ElectServer()
 	if err != nil {
 		log.Errorf("[Agent] 获取Agent链接信息失败, 请检查配置, 错误信息: %s", err.Error())
@@ -125,9 +129,8 @@ func (agt *Agent) Start() {
 	defer conn.Close()
 	agt.conn = conn
 
-	// 启动各个插件
-	agt.ctx, agt.cancel = context.WithCancel(context.Background())
 
+	// 启动各个插件
 	if err = agt.startFutures(); err != nil {
 		return
 	}
@@ -157,19 +160,33 @@ func (agt *Agent) fuMsgHandle(agtCtx context.Context, chMsg chan *InternalMsg) {
 		case fuMsg := <-chMsg:
 			switch fuMsg.Msg["futname"] {
 			case "Collect":
-				// 生成心跳包
+				// 生成收集包
 				collectMsg := &msg.Msg{
 					Type: msg.CLIENT_MSG_COLLECT,
 					Msg: &msg.Collect{
-						Uptime:   fuMsg.Msg["uptime"].(string),
 						Cpuarch:  fuMsg.Msg["cpuarch"].(string),
 						Cpunum:   fuMsg.Msg["cpunum"].(int32),
-						Memtotal: fuMsg.Msg["memtotal"].(string),
 						ColTime:  fuMsg.Msg["coltime"].(string),
 					},
 				}
 				// 发送收集项报文
 				agt.sendMsg(collectMsg)
+			case "Rpms":
+				// 生成RPM信息
+				rpmMsg := &msg.Msg{
+					Type: msg.CLIENT_MSG_RPMS,
+					Msg: &msg.Rpms{
+						Rpmlist:   fuMsg.Msg["rpmlist"].([]string),
+					},
+				}
+				// 发送RPM
+				agt.sendMsg(rpmMsg)
+			case "Update":
+				updateSwitch := fuMsg.Msg["updateswitch"].(bool)
+				if updateSwitch == true {
+					os.Exit(0)
+					//syscall.Kill(os.Getpid(), syscall.SIGHUP) 
+				}
 			default:
 				log.Errorln("[Agent]不存在的插件名, 请检查内部消息")
 			}

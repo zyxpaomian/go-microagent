@@ -1,12 +1,13 @@
 package main
 
 import (
-	//"fmt"
 	"math/rand"
 	cfg "microagent/common/configparse"
 	log "microagent/common/formatlog"
 	"microagent/core"
 	"microagent/future/collect"
+	"microagent/future/rpms"
+	"microagent/future/update"
 	"runtime"
 	"time"
 )
@@ -28,9 +29,13 @@ func main() {
 
 	// 初始化插件
 	collector := collect.NewCollector("collect")
+	rpms := rpms.NewRpmController("rpms")
+	update := update.NewUpdateController("update")
 
 	// 注册插件
 	agt.RegisterFuture("collect", collector)
+	agt.RegisterFuture("rpms", rpms)
+	agt.RegisterFuture("update", update)
 
 	// 启动Agent
 	go agt.Run()

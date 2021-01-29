@@ -15,3 +15,8 @@ message Collect {
     string memtotal = 4;
     string ColTime = 5;
 }
+
+// 主机RPM信息
+message Rpms {
+    repeated string rpmlist = 1;
+}
