@@ -7,6 +7,7 @@ import (
 	"github.com/golang/protobuf/proto"
 	"microagent/common"
 	"microagent/controller"
+	"microagent/task/update"
 	cfg "microagent/common/configparse"
 	ae "microagent/common/error"
 	log "microagent/common/formatlog"
@@ -14,7 +15,7 @@ import (
 	"net"
 	"sync"
 	"time"
-	"os/exec"
+	//"os/exec"
 )
 
 const (
@@ -43,6 +44,7 @@ type Agent struct {
 	readBuf           []byte             // 读取的缓存
 	readMsgPayloadLth uint64             // 读取的当前消息的长度
 	readTotalBytesLth uint64             // 读取的总的消息长度
+	msgChan	chan *InternalMsg	// 内部通信的channel
 }
 
 // future interface，每个future必须要实现内部的几个方法
@@ -56,6 +58,7 @@ type Future interface {
 // Agent初始化
 func NewAgent() *Agent {
 	log.Infoln("[Agent] 初始化Agent 对象....")
+	chMsg := make(chan *InternalMsg, 20)
 	agt := Agent{
 		futures:           map[string]Future{},
 		state:             Waiting,
@@ -64,6 +67,7 @@ func NewAgent() *Agent {
 		readBuf:           []byte{},
 		readMsgPayloadLth: 0,
 		readTotalBytesLth: 0,
+		msgChan: chMsg,
 	}
 	return &agt
 }
@@ -78,6 +82,7 @@ func (agt *Agent) reset() {
 	agt.readBuf = []byte{}
 	agt.readMsgPayloadLth = 0
 	agt.readTotalBytesLth = 0
+	agt.msgChan = nil
 
 
 }
@@ -119,7 +124,6 @@ func (agt *Agent) Start() {
 	}
 
 	// 启动tcp 服务，和server 端的主要通信方式
-	// serviceAddr := cfg.GlobalConf.GetStr("common", "svraddr")
 	conn, err := net.Dial("tcp", svrAddr)
 	if err != nil {
 		log.Errorf("[Agent] 无法连接到服务器 %s，报错信息 %s", svrAddr, err.Error())
@@ -149,14 +153,14 @@ func (agt *Agent) Start() {
 }
 
 // 新建一个协程，用于处理其他协程发来的消息
-func (agt *Agent) fuMsgHandle(agtCtx context.Context, chMsg chan *InternalMsg) {
+func (agt *Agent) fuMsgHandle(agtCtx context.Context) {
 	for {
 		if agt.state == Erroring {
 			log.Errorln("[Agent] Agent状态错误，跳出循环，等待Agent 自动重置")
 			break
 		}
 		select {
-		case fuMsg := <-chMsg:
+		case fuMsg := <-agt.msgChan:
 			switch fuMsg.Msg["futname"] {
 			case "Collect":
 				// 生成收集包
@@ -180,7 +184,7 @@ func (agt *Agent) fuMsgHandle(agtCtx context.Context, chMsg chan *InternalMsg) {
 				}
 				// 发送RPM
 				agt.sendMsg(rpmMsg)
-			case "Update":
+			/*case "Update":
 				updateSwitch := fuMsg.Msg["updateswitch"].(bool)
 				if updateSwitch == true {
 					log.Infoln("需要重启服务")
@@ -188,7 +192,7 @@ func (agt *Agent) fuMsgHandle(agtCtx context.Context, chMsg chan *InternalMsg) {
 					output, _ := cmd.CombinedOutput()
 					log.Infoln(string(output))
 					//syscall.Kill(os.Getpid(), syscall.SIGHUP) 
-				}
+				}*/
 			default:
 				log.Errorln("[Agent]不存在的插件名, 请检查内部消息")
 			}
@@ -204,19 +208,18 @@ func (agt *Agent) startFutures() error {
 	var err error
 	var errs FutureErrors
 	var errInfo string
-	var msgChan = make(chan *InternalMsg, 20)
 
 	// 启动个gorountine 读取内部插件的消息
-	go agt.fuMsgHandle(agt.ctx, msgChan)
+	go agt.fuMsgHandle(agt.ctx)
 
 	for name, future := range agt.futures {
 		// 顺序启动go routine， 确保每个插件第一次都能正确执行
 		go func(name string, future Future, ctx context.Context, chMsg chan *InternalMsg) {
 			log.Infof("[Agent] future: %s 准备启动....", name)
-			if err = future.Start(agt.ctx, msgChan); err != nil {
+			if err = future.Start(agt.ctx, agt.msgChan); err != nil {
 				errs.ErrorSlice = append(errs.ErrorSlice, ae.New(name+":"+err.Error()))
 			}
-		}(name, future, agt.ctx, msgChan)
+		}(name, future, agt.ctx, agt.msgChan)
 	}
 	if len(errs.ErrorSlice) == 0 {
 		return nil
@@ -320,6 +323,14 @@ func (agt *Agent) handleHeartbeatMsg(serverMsg *msg.Msg) {
 	log.Infoln("[Agent] 收到了服务端发送来的Heartbeat 应答包")
 }
 
+func (agt *Agent) handleAgentUpdateMsg(serverMsg *msg.Msg) {
+	log.Infoln("[Agent] 收到了服务端发送来的客户端升级包, 准备升级")
+	update.Update.UpdateInit()
+	update.Update.GoUpdate()
+
+	
+}
+
 /* 和server 端通信主要使用的方法 */
 // 监听tcp 长链接
 func (agt *Agent) listen(wg *sync.WaitGroup) {
@@ -347,6 +358,8 @@ func (agt *Agent) handleMsg(serverMsg *msg.Msg) {
 	switch serverMsg.Type {
 	case msg.SERVER_MSG_HEARTBEAT_RESPONSE:
 		agt.handleHeartbeatMsg(serverMsg)
+	case msg.SERVER_MSG_AGENT_UPDATE:
+		agt.handleAgentUpdateMsg(serverMsg)		
 	default:
 		log.Errorf("[Agent] 未知的消息类型 %d", serverMsg.Type)
 	}

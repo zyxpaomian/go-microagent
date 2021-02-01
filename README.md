@@ -13,7 +13,6 @@ ___
 protoc --go_out=./msg/ protobuf/agent.proto
 mv msg/protobuf/agent.pb.go msg/
 rm -rf msg/protobuf
-mv 
 ```
 
 ### 安装

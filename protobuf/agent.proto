@@ -20,3 +20,8 @@ message Collect {
 message Rpms {
     repeated string rpmlist = 1;
 }
+
+// 服务端发送更新Agent指令
+message UpdateMsg {
+    bool updateswitch = 1;
+}

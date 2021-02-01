@@ -4,6 +4,7 @@ import (
     log "microagent/common/formatlog"
     "microagent/controller"
     cfg "microagent/common/configparse"
+    "os/exec"
     "os"
 )
 
@@ -17,19 +18,18 @@ type UpdateOper struct {
     UpdateSwitch bool
 }
 
-func NewUpdate() *UpdateOper {
-    updateOper := UpdateOper{
+func (up *UpdateOper) UpdateInit() {
+    Update = &UpdateOper{
         CurVersion: "v1.0",
         NowVersion: cfg.GlobalConf.GetStr("package", "nowagent"),
         NowVersionBak: cfg.GlobalConf.GetStr("package", "nowagentbak"),
         NewVersion: cfg.GlobalConf.GetStr("package", "newagent"),
         UpdateSwitch: false,
-
     }
-    return &updateOper
+
 }
 
-func (up *UpdateOper) CheckUpdate() {
+func (up *UpdateOper) GoUpdate() {
 
 	lastVersion, err := controller.Commctrl.GetLatestVersion()
 	if err != nil {
@@ -67,7 +67,11 @@ func (up *UpdateOper) CheckUpdate() {
             return   
         }
         log.Infoln("[Agent] 移动下载版本Agent到最新完成, 等待Agent 重启")        
-        up.UpdateSwitch = true
+        
+        log.Infoln("[Agent] 开始执行Agent重启操作重启")     
+        cmd := exec.Command("bash", "-c", "./bin/restart.sh")
+		output, _ := cmd.CombinedOutput()
+		log.Infof("[Agent] 执行Agent重启操作重启完成, 结果为%s", output)
 
     }
     log.Infof("[Agent] 当前最新Agent 版本为 %s, 运行版本为 %s, 无需更新", lastVersion, up.CurVersion)
