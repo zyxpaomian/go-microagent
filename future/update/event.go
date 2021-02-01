@@ -42,7 +42,7 @@ func (u *UpdateController) Start(agtCtx context.Context, chMsg chan *core.Intern
 			u.stopChan <- struct{}{}
 			break
 		default:
-			time.Sleep(time.Millisecond * 30000)
+			time.Sleep(time.Second * 10)
 			// 并发安全，加个锁
 			internalMsg.Lock.Lock()
 			internalMsg.Msg["futname"] = "Update"

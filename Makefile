@@ -26,6 +26,9 @@ compile:
 			GOOS=$${GOOS} GOARCH=$${GOARCH} go build -v -o  bin/$(PROJECTNAME).$${GOOS}-$${GOARCH} ; \
 		done ;\
 	done
+	cp bin/microagent.windows-amd64 bin/rinckagent
+	-rm bin/microagent.windows-amd64
+	-rm bin/microagent.linux-amd64
 	
 run:
 	go run main.go

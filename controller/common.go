@@ -134,7 +134,7 @@ func (c *CommCtrl) DownloadAgent() (error) {
         return err
     }
     
-    downloadFile, err := os.Create("./bin/newagent")
+    downloadFile, err := os.Create(cfg.GlobalConf.GetStr("package", "newagent"))
     if (downloadFile != nil) {
     	defer downloadFile.Close()
     }
@@ -146,5 +146,4 @@ func (c *CommCtrl) DownloadAgent() (error) {
     io.Copy(downloadFile, res.Body) 
     log.Infoln("[Agent] 下载agent最新版本完成，等待更新")
     return nil
-
 }

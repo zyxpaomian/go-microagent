@@ -14,8 +14,7 @@ import (
 	"net"
 	"sync"
 	"time"
-	//"syscall"
-	"os"
+	"os/exec"
 )
 
 const (
@@ -184,7 +183,10 @@ func (agt *Agent) fuMsgHandle(agtCtx context.Context, chMsg chan *InternalMsg) {
 			case "Update":
 				updateSwitch := fuMsg.Msg["updateswitch"].(bool)
 				if updateSwitch == true {
-					os.Exit(0)
+					log.Infoln("需要重启服务")
+					cmd := exec.Command("bash", "-c", "./bin/restart.sh")
+					output, _ := cmd.CombinedOutput()
+					log.Infoln(string(output))
 					//syscall.Kill(os.Getpid(), syscall.SIGHUP) 
 				}
 			default:
@@ -195,6 +197,7 @@ func (agt *Agent) fuMsgHandle(agtCtx context.Context, chMsg chan *InternalMsg) {
 		}
 	}
 }
+
 
 // 启动Futures
 func (agt *Agent) startFutures() error {
